@@ -10,9 +10,40 @@ To set up the project, follow these steps:
     uv sync
     ```
 
+
+## Datasets
+
+We use the following datasets in our experiments:
+- Biased MNIST
+- Waterbirds
+- CelebA
+
+**Biased MNIST**: Biased MNIST is a synthetic dataset that we generate using the code in `src/data/biased_mnist.py`. No preparation is needed. 
+
+**Waterbirds**: we use the dataset provided by Stanford Nlp;
+1. Create a folder named `Waterbirds` inside `data/`.
+2. Download the dataset from [here](https://downloads.cs.stanford.edu/nlp/data/dro/waterbird_complete95_forest2water2.tar.gz).
+3. Extract the contents into `data/Waterbirds/waterbird_complete95_forest2water2`.
+4. Verify that you have the following files in `data/Waterbirds/waterbird_complete95_forest2water2`:
+   - `metadata.csv` (file containing the metadata of the images)
+   - `001.Black_footed_Albatross/` (folder containing the images of the Black-footed Albatross class) and so on up to `200.Common_Yellowthroat`.
+
+Note that the "corrected Waterbirds" dataset from MaskTune is unavailable, so we do not use that dataset ([here](https://drive.google.com/file/d/1xPNYQskEXuPhuqT5Hj4hXPeJa9jh7liL/view?usp=sharing) is the link provided by the authors).
+
+**CelebA**: To prepare the CelebA dataset, follow these steps:
+1. Create a folder named `CelebA` inside `data/`.
+2. Download the dataset from [here](https://www.kaggle.com/datasets/jessicali9530/celeba-dataset?resource=download-directory) into data/CelebA/raw/ (after extracting the downloaded file, you should see a folder named `archive` inside `data/CelebA/raw/`).
+3. Extract the contents into `data/CelebA/raw/'.
+4. Verify that you have the following files in `data/CelebA/raw/`:
+   - `img_align_celeba` (folder containing the images)
+   - `list_attr_celeba.csv` (file containing the attributes of the images)
+   - `list_eval_partition.csv` (file containing the train/val/test split)
+   - `list_bbox_celeba.csv` (file containing the bounding box information of the images)
+
+
 ## Running
 
-0. (Optional) Visualise samples from the dataset using `python3 -m src.data.dataset`
+0. (Optional) Visualise samples from the dataset using `python3 -m src.data.mnist`
 
 1. Train a model.
    ```

@@ -6,7 +6,7 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader
 
-from src.data.dataset import BiasedMNIST
+from src.data.mnist import BiasedMNIST
 from src.train import Trainer
 from src.utils import get_device, MODELS_DIR
 

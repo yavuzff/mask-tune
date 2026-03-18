@@ -7,7 +7,7 @@ import torch.optim as optim
 from torch.utils.data import DataLoader
 import datetime
 
-from src.data.dataset import BiasedMNIST
+from src.data.mnist import BiasedMNIST
 from src.models.cnn import SimpleCNN
 from src.utils import get_device, MODELS_DIR
 

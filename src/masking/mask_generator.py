@@ -11,7 +11,7 @@ from pytorch_grad_cam import XGradCAM, GradCAM, HiResCAM
 from pytorch_grad_cam.utils.image import show_cam_on_image
 
 from src.utils import get_device, MODELS_DIR
-from src.data.dataset import BiasedMNIST
+from src.data.mnist import BiasedMNIST
 
 
 class MaskGenerator:

@@ -3,7 +3,7 @@ import torch
 import os
 import logging
 
-from src.data.dataset import BiasedMNIST
+from src.data.mnist import BiasedMNIST
 from src.masking.mask_generator import MaskGenerator
 from src.utils import get_device, MODELS_DIR
 
