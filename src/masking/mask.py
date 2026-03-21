@@ -16,7 +16,7 @@ def main():
     parser = argparse.ArgumentParser(description="Generate Masked Dataset for MaskTune")
 
     parser.add_argument('--model', type=str, required=True, help="Path to the trained ERM model")
-    parser.add_argument('--dataset', type=str, default='biased_mnist', choices=['biased_mnist', 'waterbirds', 'celeba'])
+    parser.add_argument('--dataset', type=str, required=True, choices=['biased_mnist', 'waterbirds', 'celeba'])
     parser.add_argument('--xai_method', type=str, default='xgradcam', help="XAI method to use (xgradcam, gradcam)")
     parser.add_argument('--n_sigma', type=float, default=2, help="Number of sigma for mask thresholding")
     args = parser.parse_args()

@@ -71,7 +71,7 @@ def main():
     parser = argparse.ArgumentParser(description="MaskTune Single Epoch Fine-tuning")
     parser.add_argument('--model', type=str, required=True, help="Path to the original model")
     parser.add_argument('--masked_data_path', type=str, required=True, help="Path to the .pt/dir masked dataset")
-    parser.add_argument('--dataset', type=str, default='biased_mnist', choices=['biased_mnist', 'waterbirds', 'celeba'])
+    parser.add_argument('--dataset', type=str, required=True, choices=['biased_mnist', 'waterbirds', 'celeba'])
 
     # using a very small lr, similar to the final decayed LR from ERM training
     parser.add_argument('--lr', type=float, default=0.001, help="Should be low (e.g. final LR of ERM)")
