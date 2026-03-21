@@ -50,6 +50,8 @@ Note that the "corrected Waterbirds" dataset from MaskTune is unavailable, so we
    python3 -m src.train --dataset biased_mnist --model simple_cnn
    ```
    This will save a model checkpoint in `checkpoints/`.
+
+   Alternatively, you can download a pre-trained model checkpoint from [here](https://worksheets.codalab.org/worksheets/0x621811fe446b49bb818293bae2ef88c0), and storing the folder under `checkpoints/`.
    
 2. Apply masking on the dataset using XAI method on the trained model.
    ```

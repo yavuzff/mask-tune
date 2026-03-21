@@ -12,7 +12,8 @@ from src.data.waterbirds import WaterbirdsDataset
 from src.data.celeba import CelebADataset
 from src.data.mnist import BiasedMNIST
 from src.train import Trainer
-from src.utils import get_device, MODELS_DIR
+from src.models.resnet import ResNet50
+from src.utils import get_device, MODELS_DIR, map_model_to_resnet50
 
 
 def evaluate_model(model, loader, device, name):
@@ -77,24 +78,33 @@ def main():
     args = parser.parse_args()
 
     # save path will be in masktuned folder with subfolder of model then masked data path
-    save_path = f"{MODELS_DIR}/masktune/{args.model.split('/')[-1].split('.')[0]}/{args.masked_data_path.split('/')[-1].split('.')[0]}_masktuned.pt"
+    if args.model.startswith(MODELS_DIR):
+        args.model = args.model[len(MODELS_DIR)+1:]
+    model_folder = f"{args.model[:-4]}" if args.model.endswith('.pth') else args.model
+    masked_data_folder = f"{args.masked_data_path[:-3]}" if args.masked_data_path.endswith('.pt') else args.masked_data_path
+    if masked_data_folder.startswith("data/masked/"):
+        masked_data_folder = masked_data_folder[len("data/masked/"):]
+    save_path = f"{MODELS_DIR}/masktune/{model_folder}/{masked_data_folder}/masktuned.pt"
     os.makedirs("/".join(save_path.split("/")[:-1]), exist_ok=True)
     device = get_device()
 
     # load the model - prepend MODELS_DIR to args.model if not already there
     model_load_path = args.model if args.model.startswith(MODELS_DIR) else os.path.join(MODELS_DIR, args.model)
     model = torch.load(model_load_path, map_location=device, weights_only=False)
+    model = map_model_to_resnet50(model)
 
     # setup transforms
     test_transform = None
-    if args.dataset == 'celeba' and 'resnet50' in args.model:
+    if args.dataset == 'celeba':
+        assert isinstance(model, ResNet50)
         test_transform = transforms.Compose([
             transforms.CenterCrop(178),
             transforms.Resize(224),
             transforms.ToTensor(),
             transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
         ])
-    elif 'resnet50' in args.model:
+    elif args.dataset == 'waterbirds':
+        assert isinstance(model, ResNet50)
         test_transform = transforms.Compose([
             transforms.Resize(256),
             transforms.CenterCrop(224),

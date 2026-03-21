@@ -8,7 +8,8 @@ from src.data.celeba import CelebADataset
 from src.data.mnist import BiasedMNIST
 from src.data.waterbirds import WaterbirdsDataset
 from src.masking.mask_generator import MaskGenerator
-from src.utils import get_device, MODELS_DIR
+from src.models.resnet import ResNet50
+from src.utils import get_device, MODELS_DIR, map_model_to_resnet50
 
 
 def main():
@@ -24,23 +25,26 @@ def main():
         args.model = args.model[len(MODELS_DIR)+1:]
 
     # save path is in the folder starting with model name and xai method
-    model_folder = f"{args.model.split('.')[-2]}"  # get the folder name from the model path
+    model_folder = f"{args.model[:-4]}" if args.model.endswith('.pth') else args.model
     save_path = f"data/masked/{model_folder}/{args.dataset}_{args.xai_method}_{args.n_sigma}n_sigma_masked.pt"
     device = get_device()
 
     model = torch.load(os.path.join(MODELS_DIR, args.model), map_location=device, weights_only=False)
+    model = map_model_to_resnet50(model)
     target_layers = model.get_cam_target_layers()
 
     # for ResNet, define static transforms to generate perfectly aligned masks
     static_transform = None
-    if args.dataset == 'celeba' and 'resnet50' in args.model:
+    if args.dataset == 'celeba':
+        assert isinstance(model, ResNet50)
         static_transform = transforms.Compose([
             transforms.CenterCrop(178),
             transforms.Resize(224),
             transforms.ToTensor(),
             transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
         ])
-    elif 'resnet50' in args.model:  # Waterbirds
+    elif args.dataset == "waterbirds":
+        assert isinstance(model, ResNet50)
         static_transform = transforms.Compose([
             transforms.Resize(256),
             transforms.CenterCrop(224),
