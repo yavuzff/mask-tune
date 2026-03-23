@@ -7,14 +7,18 @@ import torch.optim as optim
 from torch.utils.data import DataLoader
 from torchvision import transforms
 from tqdm import tqdm
+import warnings
 
 from src.data.waterbirds import WaterbirdsDataset
 from src.data.celeba import CelebADataset
 from src.data.mnist import BiasedMNIST
 from src.train import Trainer
 from src.models.resnet import ResNet50
+from src.models.cnn import SimpleCNN
+from src.models.vit import StandardViT, TinyViTMNIST
 from src.utils import get_device, MODELS_DIR, map_model_to_resnet50
 
+warnings.filterwarnings("ignore", category=torch.serialization.SourceChangeWarning)
 
 def evaluate_model(model, loader, device, name):
     model.eval()
@@ -72,7 +76,7 @@ def main():
     parser.add_argument('--model', type=str, required=True, help="Path to the original model")
     parser.add_argument('--masked_data_path', type=str, required=True, help="Path to the .pt/dir masked dataset")
     parser.add_argument('--dataset', type=str, required=True, choices=['biased_mnist', 'waterbirds', 'celeba'])
-
+    parser.add_argument('--no_evaluate_base', action='store_true', help="Whether to evaluate the original model before fine-tuning")
     # using a very small lr, similar to the final decayed LR from ERM training
     parser.add_argument('--lr', type=float, default=0.001, help="Should be low (e.g. final LR of ERM)")
     parser.add_argument('--wd', type=float, default=0.0001, help="Weight decay")
@@ -80,7 +84,7 @@ def main():
 
     # save path will be in masktuned folder with subfolder of model then masked data path
     if args.model.startswith(MODELS_DIR):
-        args.model = args.model[len(MODELS_DIR)+1:]
+        args.model = args.model[len(MODELS_DIR) + 1:]
     model_folder = f"{args.model[:-4]}" if args.model.endswith('.pth') else args.model
     masked_data_folder = f"{args.masked_data_path[:-3]}" if args.masked_data_path.endswith('.pt') else args.masked_data_path
     if masked_data_folder.startswith("data/masked/"):
@@ -92,12 +96,12 @@ def main():
     # load the model - prepend MODELS_DIR to args.model if not already there
     model_load_path = args.model if args.model.startswith(MODELS_DIR) else os.path.join(MODELS_DIR, args.model)
     model = torch.load(model_load_path, map_location=device, weights_only=False)
-    model = map_model_to_resnet50(model)
+    if not isinstance(model, (StandardViT, TinyViTMNIST, SimpleCNN, ResNet50)):
+        model = map_model_to_resnet50(model)
 
     # setup transforms
     test_transform = None
     if args.dataset == 'celeba':
-        assert isinstance(model, ResNet50)
         test_transform = transforms.Compose([
             transforms.CenterCrop(178),
             transforms.Resize(224),
@@ -105,7 +109,6 @@ def main():
             transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
         ])
     elif args.dataset == 'waterbirds':
-        assert isinstance(model, ResNet50)
         test_transform = transforms.Compose([
             transforms.Resize(256),
             transforms.CenterCrop(224),
@@ -131,13 +134,14 @@ def main():
         raise ValueError(f"Unsupported dataset {args.dataset}")
 
     # evaluate before fine-tuning
-    logging.info("\n--- Before MaskTune Fine-tuning ---")
-    if args.dataset == 'biased_mnist':
-        evaluate_model(model, test_loader_biased, device, "Biased Test Set (Shortcut)")
-        evaluate_model(model, test_loader_unbiased, device, "Unbiased Test Set (Real Features)")
-    else:
-        evaluate_model(model, monitor_loader, device, "Overall Average")
-        evaluate_worst_group(model, monitor_loader, device, "Pre-MaskTune")
+    if not args.no_evaluate_base:
+        logging.info("\n--- Before MaskTune Fine-tuning ---")
+        if args.dataset == 'biased_mnist':
+            evaluate_model(model, test_loader_biased, device, "Biased Test Set (Shortcut)")
+            evaluate_model(model, test_loader_unbiased, device, "Unbiased Test Set (Real Features)")
+        else:
+            evaluate_model(model, monitor_loader, device, "Overall Average")
+            evaluate_worst_group(model, monitor_loader, device, "Pre-MaskTune")
 
     # load masked dataset and train
     if args.masked_data_path.endswith('.pt'):
@@ -156,7 +160,7 @@ def main():
             masked_dataset = CelebADataset(
                 train=True,
                 transform=train_transform,
-                masked_data_dir=args.masked_data_path
+                img_dir=args.masked_data_path
             )
         else:
             raise NotImplementedError("Only CelebA is currently supported for directory-based masked data.")
@@ -164,8 +168,14 @@ def main():
     # use workers for faster loading if using physical images
     train_loader = DataLoader(masked_dataset, batch_size=64, shuffle=True, num_workers=2)
 
-    optimiser = optim.SGD(model.parameters(), lr=args.lr, momentum=0.9, weight_decay=args.wd)
     criterion = nn.CrossEntropyLoss()
+    if isinstance(model, (StandardViT, TinyViTMNIST)):
+        optimiser = optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.wd)
+        logging.info(f"Using AdamW optimiser for ViT with lr={args.lr}")
+    else:
+        optimiser = optim.SGD(model.parameters(), lr=args.lr, momentum=0.9, weight_decay=args.wd)
+        logging.info(f"Using SGD optimiser for CNN with lr={args.lr}")
+
     trainer = Trainer(
         model=model,
         train_loader=train_loader,

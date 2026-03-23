@@ -67,7 +67,8 @@ Note that the "corrected Waterbirds" dataset from MaskTune is unavailable, so we
 
 3. Fine-tune the original model using the masked dataset.
    ```
-   python3 -m src.tune --model X --masked_data_path X --lr 0.01
+   python3 -m src.tune --model X --masked_data_path X --lr 0.01  --dataset EVAL_DATASET
+
    ```
    e.g.,
    ```

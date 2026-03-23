@@ -14,6 +14,7 @@ from src.data.waterbirds import WaterbirdsDataset
 from src.data.celeba import CelebADataset
 from src.models.cnn import SimpleCNN
 from src.models.resnet import ResNet50
+from src.models.vit import TinyViTMNIST, StandardViT
 from src.utils import get_device, MODELS_DIR
 
 
@@ -74,6 +75,10 @@ class Trainer:
                          f"Train Loss: {train_loss:.4f}, Train Acc: {train_acc:.2f}%, "
                          f"Test Loss: {test_loss:.4f}, Test Acc: {test_acc:.2f}%")
 
+            base_path, ext = os.path.splitext(self.save_path)
+            epoch_save_path = f"{base_path}_epoch_{epoch + 1}{ext}"
+            self.save_model(epoch_save_path)
+
         # save the final model for MaskTune phase 2
         self.save_model(self.save_path)
         logging.info(f"Training complete. Final model saved to {self.save_path}")
@@ -112,7 +117,7 @@ def main():
     # dataset and model args
     parser.add_argument('--dataset', type=str, default='biased_mnist', choices=['biased_mnist', 'celeba', 'waterbirds'],
                         help='Dataset to train on')
-    parser.add_argument('--model', type=str, default='simple_cnn', choices=['simple_cnn', 'resnet50', 'vit'],
+    parser.add_argument('--model', type=str, default='simple_cnn', choices=['simple_cnn', 'resnet50', 'vit-tiny', 'vit-std'],
                         help='Model architecture')
 
     # hyperparameters
@@ -132,7 +137,7 @@ def main():
     # define transforms for resnet datasets
     train_transform = None
     test_transform = None
-    if args.model == 'resnet50':
+    if args.model in ['resnet50', 'vit-std']:
         train_transform = transforms.Compose([
             transforms.RandomResizedCrop(224),
             transforms.RandomHorizontalFlip(),
@@ -170,12 +175,23 @@ def main():
         model = SimpleCNN(num_classes=2).to(device)
     elif args.model == 'resnet50':
         model = ResNet50(pretrained=True, num_classes=2).to(device)
+    elif args.model == 'vit-tiny':
+        model = TinyViTMNIST(num_classes=2).to(device)
+    elif args.model == 'vit-std':
+        model = StandardViT(num_classes=2).to(device)
     else:
         raise NotImplementedError(f"Model {args.model} not fully implemented yet.")
 
     # optimiser, criterion, scheduler
     criterion = nn.CrossEntropyLoss()
-    optimiser = optim.SGD(model.parameters(), lr=args.lr, momentum=args.momentum, weight_decay=args.weight_decay)
+
+    if 'vit' in args.model:
+        # lr = 0.0001 would be preferred for vit
+        optimiser = optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+    else:
+        # CNNs work great with standard SGD
+        optimiser = optim.SGD(model.parameters(), lr=args.lr, momentum=args.momentum, weight_decay=args.weight_decay)
+
     scheduler = optim.lr_scheduler.StepLR(optimiser, step_size=args.lr_step, gamma=args.lr_gamma)
 
     # start training

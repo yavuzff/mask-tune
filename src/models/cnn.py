@@ -8,6 +8,7 @@ class SimpleCNN(nn.Module):
     spatial resolution to isolate corner patches.
     """
     def __init__(self, num_classes=2):
+        # 686 parameters
         super(SimpleCNN, self).__init__()
 
         # Block 1: 28x28 -> 26x26 -> 24x24

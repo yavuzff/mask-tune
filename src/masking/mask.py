@@ -3,13 +3,16 @@ import torch
 import os
 import logging
 from torchvision import transforms
+import warnings
 
 from src.data.celeba import CelebADataset
 from src.data.mnist import BiasedMNIST
 from src.data.waterbirds import WaterbirdsDataset
-from src.masking.mask_generator import MaskGenerator
-from src.models.resnet import ResNet50
+from src.masking.mask_generator import MaskGenerator, reshape_transform_vit_224, reshape_transform_vit_28
+from src.models.vit import StandardViT, TinyViTMNIST
 from src.utils import get_device, MODELS_DIR, map_model_to_resnet50
+
+warnings.filterwarnings("ignore", category=torch.serialization.SourceChangeWarning)
 
 
 def main():
@@ -33,10 +36,19 @@ def main():
     model = map_model_to_resnet50(model)
     target_layers = model.get_cam_target_layers()
 
+    # determine reshaping transform for cam
+    reshape_transform = None
+    is_standard_vit = isinstance(model, StandardViT)
+    is_tiny_vit = isinstance(model, TinyViTMNIST)
+
+    if is_standard_vit:
+        reshape_transform = reshape_transform_vit_224
+    elif is_tiny_vit:
+        reshape_transform = reshape_transform_vit_28
+
     # for ResNet, define static transforms to generate perfectly aligned masks
     static_transform = None
     if args.dataset == 'celeba':
-        assert isinstance(model, ResNet50)
         static_transform = transforms.Compose([
             transforms.CenterCrop(178),
             transforms.Resize(224),
@@ -44,7 +56,6 @@ def main():
             transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
         ])
     elif args.dataset == "waterbirds":
-        assert isinstance(model, ResNet50)
         static_transform = transforms.Compose([
             transforms.Resize(256),
             transforms.CenterCrop(224),
@@ -64,7 +75,13 @@ def main():
 
     # generate masks
     batch_size = 32
-    masker = MaskGenerator(model, target_layers, method=args.xai_method, device=device)
+    masker = MaskGenerator(
+        model,
+        target_layers,
+        method=args.xai_method,
+        device=device,
+        reshape_transform=reshape_transform
+    )
 
     # for CelebA we must save to a folder of physical images to avoid crashing RAM
     if args.dataset == 'celeba':

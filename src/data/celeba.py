@@ -1,21 +1,25 @@
 import os
 import pandas as pd
+import logging
 from PIL import Image
 from torch.utils.data import Dataset
-import logging
 
 
 class CelebADataset(Dataset):
-    def __init__(self, root='./data/CelebA/raw', train=True, transform=None, masked_data_dir=None):
+    def __init__(self, root='./data/CelebA/raw', img_dir=None, train=True, transform=None):
         """
         CelebA dataset mapping target (Blond Hair) and confounder (Male).
         """
         self.root = root
         self.train = train
         self.transform = transform
-        self.masked_data_dir = masked_data_dir
 
-        self.img_dir = os.path.join(self.root, 'img_align_celeba')
+        # if an explicit image directory is provided (like a masked folder), use it.
+        # otherwise, default to the standard raw CelebA image folder.
+        if img_dir is not None:
+            self.img_dir = img_dir
+        else:
+            self.img_dir = os.path.join(self.root, 'img_align_celeba')
 
         # load partitions (0: train, 1: val, 2: test)
         partition_df = pd.read_csv(os.path.join(self.root, 'list_eval_partition.csv'))
@@ -38,7 +42,7 @@ class CelebADataset(Dataset):
         self.targets = self.df['Blond_Hair'].tolist()
         self.confounders = self.df['Male'].tolist()
 
-        logging.info(f"Generating {'Training' if train else 'Testing'} CelebA dataset: {len(self.image_ids)} samples.")
+        logging.info(f"Generating {'Training' if train else 'Testing'} CelebA dataset from {self.img_dir}: {len(self.image_ids)} samples.")
 
     def __len__(self):
         return len(self.image_ids)
@@ -55,22 +59,11 @@ class CelebADataset(Dataset):
         if self.transform:
             img = self.transform(img)
 
-        # handle masked data loading (for phase 3: MaskTune finetuning) ---
-        if self.masked_data_dir is not None:
-            masked_img_path = os.path.join(self.masked_data_dir, img_filename)
-            masked_img = Image.open(masked_img_path).convert('RGB')
-
-            if self.transform:
-                masked_img = self.transform(masked_img)
-
-            return img, target, img_file_path, confounder, masked_img
-
         return img, target, img_file_path, confounder
 
 
 if __name__ == '__main__':
     import matplotlib.pyplot as plt
-    import logging
 
     logging.basicConfig(level=logging.INFO)
 

@@ -14,8 +14,12 @@ from captum.attr import Saliency, IntegratedGradients, InputXGradient, GuidedBac
 
 from src.data.celeba import CelebADataset
 from src.data.waterbirds import WaterbirdsDataset
-from src.utils import get_device, MODELS_DIR
+from src.utils import get_device, MODELS_DIR, map_model_to_resnet50
 from src.data.mnist import BiasedMNIST
+from src.models.vit import StandardViT, TinyViTMNIST
+from src.models.cnn import SimpleCNN
+from src.models.resnet import ResNet50
+
 
 
 class CaptumWrapper:
@@ -59,14 +63,14 @@ class CaptumWrapper:
 
 
 class MaskGenerator:
-    def __init__(self, model, target_layers, method='xgradcam', device='mps'):
+    def __init__(self, model, target_layers, method='xgradcam', device='mps', reshape_transform=None):
         self.model = model
         self.target_layers = target_layers
         self.device = device
         self.method_name = method
-        self.cam = self._get_cam_method(method)
+        self.cam = self._get_cam_method(method, reshape_transform)
 
-    def _get_cam_method(self, method):
+    def _get_cam_method(self, method, reshape_transform):
         """
         Factory to allow easy extension to other XAI methods.
         """
@@ -78,15 +82,19 @@ class MaskGenerator:
             'eigencam': EigenCAM,
         }
         captum_methods = {
-            'saliency': Saliency,  # vanilla gradients
-            #'integrated_gradients': IntegratedGradients, # can't run on mac - fp64 needed
+            'saliency': Saliency,
             'input_x_gradient': InputXGradient,
             'guided_backprop': GuidedBackprop,
             'deeplift': DeepLift,
         }
         method = method.lower()
         if method in cam_methods:
-            return cam_methods[method](model=self.model, target_layers=self.target_layers)
+            # CAM methods need the reshape transform for ViTs
+            return cam_methods[method](
+                model=self.model,
+                target_layers=self.target_layers,
+                reshape_transform=reshape_transform
+            )
         elif method in captum_methods:
             return CaptumWrapper(model=self.model, captum_method_class=captum_methods[method])
         else:
@@ -258,20 +266,56 @@ def visualise_random_samples(mask_generator, dataset, num_samples=5, target_clas
         plt.show()
 
 
+def reshape_transform_vit_224(tensor, height=14, width=14):
+    """
+    Reshapes the 1D token sequence from vit_small_patch16_224 back into a 14x14 2D grid.
+    Tensor shape in: [batch, 197, dim] (1 CLS token + 196 spatial tokens)
+    """
+    # strip off the CLS token (index 0)
+    result = tensor[:, 1:, :]
+
+    # reshape the 196 tokens into a 14x14 grid
+    result = result.reshape(tensor.size(0), height, width, tensor.size(2))
+
+    # permute to match CNN format [batch, channels, height, width]
+    result = result.transpose(2, 3).transpose(1, 2)
+    return result
+
+
+def reshape_transform_vit_28(tensor, height=7, width=7):
+    """
+    Reshapes the 1D token sequence from TinyViTMNIST back into a 7x7 2D grid.
+    Tensor shape in: [batch, 50, dim] (1 CLS token + 49 spatial tokens)
+    """
+    result = tensor[:, 1:, :]
+    result = result.reshape(tensor.size(0), height, width, tensor.size(2))
+    result = result.transpose(2, 3).transpose(1, 2)
+    return result
+
 if __name__ == "__main__":
     from torchvision import transforms
 
     visualise_type = "celeba"
-    n_sigma = 0.5
+    n_sigma = 2
+    xai_method = "eigencam"
+    use_vit = False
+
     if visualise_type == "mnist":
-        model_name = "simple_cnn_biased_mnist2026-02-22_15-53-02.pth" # matching small
+        if not use_vit:
+            model_name = "simple_cnn_biased_mnist2026-02-22_15-53-02.pth" # matching small
+        else:
+            model_name = "vit-tiny_biased_mnist2026-03-22_01-38-26.pth"
         # initialise dataset
         test_dataset = BiasedMNIST(train=False)
         unnormalise=False
         target_class = 1
         seed=43
     elif visualise_type == "waterbirds":
-        model_name = "resnet50_waterbirds2026-03-18_18-24-11.pth"
+        if not use_vit:
+            model_name = "resnet50_waterbirds2026-03-18_18-24-11.pth"
+        else:
+            model_name = "vit_small_patch16_224"
+
         # define static transform for ResNet inputs
         static_transform = transforms.Compose([
             transforms.Resize(256),
@@ -284,7 +328,7 @@ if __name__ == "__main__":
         target_class = 1
         seed = 43
     elif visualise_type == "celeba":
-        model_name = "resnet50_waterbirds2026-03-18_18-24-11.pth"
+        model_name = "celebA_ERM_wd-0.0001_lr-0.0001/logs/best_model.pth"
         # define static transform for ResNet inputs
         static_transform = transforms.Compose([
             transforms.CenterCrop(178),
@@ -300,10 +344,24 @@ if __name__ == "__main__":
         raise ValueError(f"Unknown visualise type: {visualise_type}")
 
     model = torch.load(os.path.join(MODELS_DIR, model_name), map_location=get_device(), weights_only=False)
+    if not isinstance(model, (StandardViT, TinyViTMNIST, SimpleCNN, ResNet50)):
+        model = map_model_to_resnet50(model)
 
+    print(f"Model {model_name} has {sum(p.numel() for p in model.parameters())} parameters.")
     # initialise masker
     target_layers = model.get_cam_target_layers()
-    masker = MaskGenerator(model, target_layers, method='xgradcam', device=get_device())
+
+    reshape_transform = None
+    if isinstance(model, StandardViT):
+        reshape_transform = reshape_transform_vit_224
+        logging.info("Detected StandardViT! Applying 224x224 reshape transform.")
+    elif isinstance(model, TinyViTMNIST):
+        reshape_transform = reshape_transform_vit_28
+        logging.info("Detected TinyViTMNIST! Applying 28x28 reshape transform.")
+    else:
+        logging.info("Detected CNN/ResNet! No reshape transform needed.")
+
+    masker = MaskGenerator(model, target_layers, method=xai_method, device=get_device(), reshape_transform=reshape_transform)
 
     # visualise
     visualise_random_samples(masker, test_dataset, num_samples=10, target_class=target_class, seed=seed, unnormalise=unnormalise, n_sigma=n_sigma)

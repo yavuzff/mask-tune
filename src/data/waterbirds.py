@@ -6,27 +6,25 @@ import logging
 
 
 class WaterbirdsDataset(Dataset):
-    def __init__(self, root='./data/Waterbirds/waterbird_complete95_forest2water2', train=True, transform=None,
-                 masked_data_dir=None):
+    def __init__(self, root='./data/Waterbirds/waterbird_complete95_forest2water2', train=True, transform=None):
         """
         Waterbirds dataset mapping target (bird type) and confounder (background).
         """
         self.root = root
         self.train = train
         self.transform = transform
-        self.masked_data_dir = masked_data_dir
 
         # load metadata
         csv_path = os.path.join(self.root, 'metadata.csv')
         self.metadata = pd.read_csv(csv_path)
 
         # map train=True to split 0 (train), and train=False to split 2 (test).
-        # we skip split 1 (val) as it is unused in the MaskTune evaluation phase.
+        # we skip split 1 (val) as it is unused.
         target_split = 0 if self.train else 2
         self.metadata = self.metadata[self.metadata['split'] == target_split].reset_index(drop=True)
 
         logging.info(
-            f"Generating {'Training' if train else 'Testing'} Waterbirds dataset: {len(self.metadata)} samples.")
+            f"Generating {'Training' if train else 'Testing'} ORIGINAL Waterbirds dataset: {len(self.metadata)} samples.")
 
     def __len__(self):
         return len(self.metadata)
@@ -48,17 +46,7 @@ class WaterbirdsDataset(Dataset):
         if self.transform:
             img = self.transform(img)
 
-        # handle masked data loading (for phase 3: MaskTune finetuning) ---
-        if self.masked_data_dir is not None:
-            # assumes the mask generation script recreates the folder structure or uses a flat structure.
-            masked_img_path = os.path.join(self.masked_data_dir, img_filename.split('/')[-1])
-            masked_img = Image.open(masked_img_path).convert('RGB')
-
-            if self.transform:
-                masked_img = self.transform(masked_img)
-
-            return img, target, img_file_path, confounder, masked_img
-
+        # return the 4 items for ERM and mask generation
         return img, target, img_file_path, confounder
 
 
