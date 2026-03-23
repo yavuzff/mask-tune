@@ -22,11 +22,10 @@ from src.models.cnn import SimpleCNN
 from src.models.resnet import ResNet50
 
 
-
 class ViTAttentionWrapper:
     """
     Extracts native attention maps from a Vision Transformer using forward hooks.
-    Supports 'last_layer_attention', 'rollout', and 'grad_attention'.
+    Supports 'last_layer_attention', 'rollout', 'grad_attention', and 'transformer_attribution'.
     """
 
     def __init__(self, model, method='rollout', discard_ratio=0.9):
@@ -54,9 +53,9 @@ class ViTAttentionWrapper:
 
     def save_attention(self, module, input, output):
         # input[0] is the softmax-ed attention matrix.
-        # Kept on device/graph so we can compute gradients later!
         attn = input[0]
-        if self.method == 'grad_attention':
+        # we need gradients for both grad_attention and transformer_attribution
+        if self.method in ['grad_attention', 'transformer_attribution']:
             attn.retain_grad()
         self.attentions.append(attn)
 
@@ -64,8 +63,8 @@ class ViTAttentionWrapper:
         self.attentions = []
         B = input_tensor.size(0)
 
-        # class specific grad-attention inspired by grad-cam
-        if self.method == 'grad_attention':
+        # gradient based methods
+        if self.method in ['grad_attention', 'transformer_attribution']:
             self.model.zero_grad()
             input_tensor.requires_grad_()
             outputs = self.model(input_tensor)
@@ -80,30 +79,57 @@ class ViTAttentionWrapper:
             # compute gradients
             outputs.backward(gradient=one_hot, retain_graph=True)
 
-            # get last layer attention and its gradients
-            attn = self.attentions[-1]  # [B, heads, N, N]
-            gradients = attn.grad       # [B, heads, N, N]
+            N = self.attentions[0].size(2)
+            device = self.attentions[0].device
 
-            # weight attention by positive gradients (GradCAM style)
-            weights = torch.clamp(gradients, min=0.0)
-            weighted_attn = (weights * attn).mean(dim=1)  # [B, N, N]
-            cls_attn = weighted_attn[:, 0, 1:]            # [B, N-1]
+            if self.method == 'grad_attention':
+                # get last layer attention and its gradients
+                attn = self.attentions[-1]  # [B, heads, N, N]
+                gradients = attn.grad  # [B, heads, N, N]
 
-        # class-agnostic methods
+                # weight attention by positive gradients
+                weights = torch.clamp(gradients, min=0.0)
+                weighted_attn = (weights * attn).mean(dim=1)  # [B, N, N]
+                cls_attn = weighted_attn[:, 0, 1:]  # [B, N-1]
+
+            elif self.method == 'transformer_attribution':
+                # initialise rollout with identity matrix
+                rollout = torch.eye(N, device=device).unsqueeze(0).repeat(B, 1, 1)
+
+                # roll out the gradient-weighted attention across ALL layers (Chefer et al.)
+                for attn in self.attentions:
+                    grad = attn.grad
+
+                    # element-wise multiply attention by its positive gradients
+                    cam = torch.clamp(attn * grad, min=0.0)
+
+                    # average across heads
+                    cam = cam.mean(dim=1)  # [B, N, N]
+
+                    # add identity (residual connection) and normalise rows
+                    cam = cam + torch.eye(N, device=device).unsqueeze(0)
+                    cam = cam / cam.sum(dim=-1, keepdim=True)
+
+                    # matrix multiply to unroll the attention graph
+                    rollout = torch.bmm(cam, rollout)
+
+                # extract the row corresponding to the CLS token's attention
+                cls_attn = rollout[:, 0, 1:]  # [B, N-1]
+
         else:
             with torch.no_grad():
                 _ = self.model(input_tensor)
 
             N = self.attentions[0].size(2)  # number of tokens
+            device = self.attentions[0].device
 
             if self.method == 'last_layer_attention':
                 # take the last layer's attention, mean across heads
                 attn = self.attentions[-1].mean(dim=1)  # [B, N, N]
-                cls_attn = attn[:, 0, 1:]               # [B, N-1]
+                cls_attn = attn[:, 0, 1:]  # [B, N-1]
 
             elif self.method == 'rollout':
-                # initialise rollout with identity matrix on the correct device
-                device = self.attentions[0].device
+                # initialise rollout with identity matrix
                 rollout = torch.eye(N, device=device).unsqueeze(0).repeat(B, 1, 1)
 
                 for attn in self.attentions:
@@ -215,7 +241,7 @@ class MaskGenerator:
             'guided_backprop': GuidedBackprop,
             'deeplift': DeepLift,
         }
-        attention_methods = ['rollout', 'last_layer_attention', 'grad_attention']
+        attention_methods = ['rollout', 'last_layer_attention', 'grad_attention', 'transformer_attribution']
 
         method = method.lower()
         if method in cam_methods:
@@ -387,7 +413,7 @@ def visualise_random_samples(mask_generator, dataset, num_samples=5, target_clas
         axes[0].axis('off')
 
         axes[1].imshow(cam_image)
-        axes[1].set_title("Grad-CAM Heatmap")
+        axes[1].set_title("Attribution Heatmap")
         axes[1].axis('off')
 
         axes[2].imshow(masked_img_np)
@@ -429,7 +455,7 @@ if __name__ == "__main__":
 
     visualise_type = "celeba"
     n_sigma = 2
-    xai_method = "grad_attention"
+    xai_method = "xgradcam"
     use_vit = True
 
     if visualise_type == "mnist":

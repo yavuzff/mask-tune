@@ -18,4 +18,5 @@ def map_model_to_resnet50(checkpoint_model):
     formatted_state_dict = {f"model.{k}": v for k, v in state_dict.items()}
     model.load_state_dict(formatted_state_dict, strict=False)
     model = model.to(get_device())
+    logging.info(f"Mapped model to resnet50...")
     return model

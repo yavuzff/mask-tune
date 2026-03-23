@@ -10,6 +10,8 @@ from src.data.mnist import BiasedMNIST
 from src.data.waterbirds import WaterbirdsDataset
 from src.masking.mask_generator import MaskGenerator, reshape_transform_vit_224, reshape_transform_vit_28
 from src.models.vit import StandardViT, TinyViTMNIST
+from src.models.cnn import SimpleCNN
+from src.models.resnet import ResNet50
 from src.utils import get_device, MODELS_DIR, map_model_to_resnet50
 
 warnings.filterwarnings("ignore", category=torch.serialization.SourceChangeWarning)
@@ -22,6 +24,7 @@ def main():
     parser.add_argument('--dataset', type=str, required=True, choices=['biased_mnist', 'waterbirds', 'celeba'])
     parser.add_argument('--xai_method', type=str, default='xgradcam', help="XAI method to use (xgradcam, gradcam)")
     parser.add_argument('--n_sigma', type=float, default=2, help="Number of sigma for mask thresholding")
+    parser.add_argument('--rollout_discard_ratio', type=float, default=0.9, help="Rollout discard ratio")
     args = parser.parse_args()
 
     if args.model.startswith(MODELS_DIR):
@@ -29,11 +32,18 @@ def main():
 
     # save path is in the folder starting with model name and xai method
     model_folder = f"{args.model[:-4]}" if args.model.endswith('.pth') else args.model
-    save_path = f"data/masked/{model_folder}/{args.dataset}_{args.xai_method}_{args.n_sigma}n_sigma_masked.pt"
+    base_mask_name = f"{args.dataset}_{args.xai_method}_{args.n_sigma}n_sigma"
+    if args.xai_method == "rollout":
+        base_mask_name += f"_{args.rollout_discard_ratio}discard_ratio"
+    base_mask_name += "_masked"
+
+    save_path = f"data/masked/{model_folder}/{base_mask_name}.pt"
     device = get_device()
 
     model = torch.load(os.path.join(MODELS_DIR, args.model), map_location=device, weights_only=False)
-    model = map_model_to_resnet50(model)
+
+    if not isinstance(model, (StandardViT, TinyViTMNIST, SimpleCNN, ResNet50)):
+        model = map_model_to_resnet50(model)
     target_layers = model.get_cam_target_layers()
 
     # determine reshaping transform for cam
@@ -80,12 +90,13 @@ def main():
         target_layers,
         method=args.xai_method,
         device=device,
-        reshape_transform=reshape_transform
+        reshape_transform=reshape_transform,
+        rollout_discard_ratio=args.rollout_discard_ratio,
     )
 
     # for CelebA we must save to a folder of physical images to avoid crashing RAM
     if args.dataset == 'celeba':
-        save_folder = f"data/masked/{model_folder}/{args.dataset}_{args.xai_method}_{args.n_sigma}n_sigma_masked/"
+        save_folder = f"data/masked/{model_folder}/{base_mask_name}/"
         logging.info(f"Dataset is CelebA. Saving physical images to {save_folder} to save RAM.")
         masker.generate_masked_dataset(train_dataset, batch_size=batch_size, save_dir=save_folder, n_sigma=args.n_sigma)
         logging.info("CelebA masks generated successfully.")
