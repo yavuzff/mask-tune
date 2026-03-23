@@ -7,10 +7,11 @@ import random
 import matplotlib.pyplot as plt
 import os
 from torchvision.transforms.functional import to_pil_image
+import torch.nn.functional as F
 
 from pytorch_grad_cam.utils.image import show_cam_on_image
 from pytorch_grad_cam import XGradCAM, GradCAM, HiResCAM, GradCAMPlusPlus, EigenCAM
-from captum.attr import Saliency, IntegratedGradients, InputXGradient, GuidedBackprop, DeepLift
+from captum.attr import Saliency, InputXGradient, GuidedBackprop, DeepLift
 
 from src.data.celeba import CelebADataset
 from src.data.waterbirds import WaterbirdsDataset
@@ -20,6 +21,99 @@ from src.models.vit import StandardViT, TinyViTMNIST
 from src.models.cnn import SimpleCNN
 from src.models.resnet import ResNet50
 
+
+
+class ViTAttentionWrapper:
+    """
+    Extracts native attention maps from a Vision Transformer using forward hooks.
+    Supports both 'last_layer_attention' and 'rollout'.
+    """
+
+    def __init__(self, model, method='rollout', discard_ratio=0.9):
+        self.model = model
+        self.method = method
+        self.discard_ratio = discard_ratio
+        self.attentions = []
+        self._register_hooks()
+
+    def _register_hooks(self):
+        hooked_layers = 0
+
+        # turn off fused attention so the matrix is materialized in Python
+        for module in self.model.modules():
+            if hasattr(module, 'fused_attn'):
+                module.fused_attn = False
+
+        # register the hooks using a namespace check
+        for name, module in self.model.named_modules():
+            if 'attn_drop' in name:
+                module.register_forward_hook(self.save_attention)
+                hooked_layers += 1
+        assert hooked_layers > 0
+        logging.info(f"Successfully hooked into {hooked_layers} attention layers.")
+
+    def save_attention(self, module, input, output):
+        # input[0] is the softmax-ed attention matrix
+        self.attentions.append(input[0].detach().cpu())
+
+    def __call__(self, input_tensor, targets=None):
+        self.attentions = []
+        with torch.no_grad():
+            _ = self.model(input_tensor)
+
+        B = input_tensor.size(0)
+        N = self.attentions[0].size(2)  # number of tokens (e.g., 197 or 50)
+
+        if self.method == 'last_layer_attention':
+            # take the last layer's attention, mean across heads
+            attn = self.attentions[-1].mean(dim=1)  # [B, N, N]
+            cls_attn = attn[:, 0, 1:]  # [B, N-1]
+
+        elif self.method == 'rollout':
+            # initialise rollout with identity matrix
+            rollout = torch.eye(N).unsqueeze(0).repeat(B, 1, 1)
+
+            for attn in self.attentions:
+                # average across heads
+                A = attn.mean(dim=1)  # [B, N, N]
+
+                # filter noise by discarding the lowest weights
+                if self.discard_ratio > 0:
+                    flat = A.view(B, -1)
+                    k = int(flat.size(-1) * self.discard_ratio)
+                    bottom_k, _ = torch.topk(flat, k, dim=-1, largest=False)
+                    thresholds = bottom_k[:, -1].view(B, 1, 1)
+                    A = torch.where(A < thresholds, torch.zeros_like(A), A)
+
+                # add identity (residual connection) and normalise rows
+                A = A + torch.eye(N).unsqueeze(0)
+                A = A / A.sum(dim=-1, keepdim=True)
+
+                # matrix multiply to unroll the attention graph
+                rollout = torch.bmm(A, rollout)
+
+            # extract the row corresponding to the CLS token's attention to spatial patches
+            cls_attn = rollout[:, 0, 1:]  # [B, N-1]
+
+        # reshape the 1D patch array into a 2D grid
+        grid_size = int(np.sqrt(cls_attn.size(1)))
+        heatmaps = cls_attn.reshape(B, 1, grid_size, grid_size)
+
+        # scale the grid up to the original image size (e.g., 224x224)
+        heatmaps = F.interpolate(heatmaps, size=(input_tensor.size(2), input_tensor.size(3)), mode='bilinear',
+                                 align_corners=False)
+        heatmaps_np = heatmaps.squeeze(1).numpy()
+
+        # normalise to [0, 1] per heatmap so n_sigma logic works flawlessly
+        for i in range(B):
+            h_max = heatmaps_np[i].max()
+            h_min = heatmaps_np[i].min()
+            if h_max > h_min:
+                heatmaps_np[i] = (heatmaps_np[i] - h_min) / (h_max - h_min)
+            else:
+                heatmaps_np[i] = np.zeros_like(heatmaps_np[i])
+
+        return heatmaps_np
 
 
 class CaptumWrapper:
@@ -63,14 +157,15 @@ class CaptumWrapper:
 
 
 class MaskGenerator:
-    def __init__(self, model, target_layers, method='xgradcam', device='mps', reshape_transform=None):
+    def __init__(self, model, target_layers, method='xgradcam', device='mps', reshape_transform=None, rollout_discard_ratio=0.9):
         self.model = model
         self.target_layers = target_layers
         self.device = device
         self.method_name = method
-        self.cam = self._get_cam_method(method, reshape_transform)
+        self.rollout_discard_ratio = rollout_discard_ratio
+        self.cam = self._get_xai_method(method, reshape_transform)
 
-    def _get_cam_method(self, method, reshape_transform):
+    def _get_xai_method(self, method, reshape_transform):
         """
         Factory to allow easy extension to other XAI methods.
         """
@@ -87,6 +182,8 @@ class MaskGenerator:
             'guided_backprop': GuidedBackprop,
             'deeplift': DeepLift,
         }
+        attention_methods = ['rollout', 'last_layer_attention']
+
         method = method.lower()
         if method in cam_methods:
             # CAM methods need the reshape transform for ViTs
@@ -97,6 +194,8 @@ class MaskGenerator:
             )
         elif method in captum_methods:
             return CaptumWrapper(model=self.model, captum_method_class=captum_methods[method])
+        elif method in attention_methods:
+            return ViTAttentionWrapper(model=self.model, method=method, discard_ratio=self.rollout_discard_ratio)
         else:
             raise ValueError(f"Method {method} not implemented.")
 
@@ -297,8 +396,8 @@ if __name__ == "__main__":
 
     visualise_type = "celeba"
     n_sigma = 2
-    xai_method = "eigencam"
-    use_vit = False
+    xai_method = "last_layer_attention"
+    use_vit = True
 
     if visualise_type == "mnist":
         if not use_vit:
@@ -328,7 +427,10 @@ if __name__ == "__main__":
         target_class = 1
         seed = 43
     elif visualise_type == "celeba":
-        model_name = "celebA_ERM_wd-0.0001_lr-0.0001/logs/best_model.pth"
+        if not use_vit:
+            model_name = "celebA_ERM_wd-0.0001_lr-0.0001/logs/best_model.pth"
+        else:
+            model_name = "vit-std_celeba2026-03-22_11-16-30_epoch_10.pth"
         # define static transform for ResNet inputs
         static_transform = transforms.Compose([
             transforms.CenterCrop(178),
